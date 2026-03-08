@@ -1,0 +1,20 @@
+# 音訊設定
+audio:
+  device: null          # 音訊裝置名稱，null 時啟動會詢問
+  sample_rate: 16000    # 取樣率
+
+# VAD 設定
+vad:
+  silence_threshold: 1.5  # 靜音多久視為一段結束（秒）
+
+# ASR 設定
+asr:
+  model: large-v3        # Whisper 模型大小
+  language: zh            # 辨識語言，null 為自動偵測
+  device: auto            # 推理裝置：auto / cpu / cuda
+  convert_traditional: true  # 簡體轉繁體中文（s2twp 台灣慣用詞）
+
+# 輸出設定
+output:
+  directory: ./transcripts  # 逐字稿輸出目錄
+  format: txt               # 輸出格式

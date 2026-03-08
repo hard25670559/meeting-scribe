@@ -1,0 +1,14 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+
+# macOS
+.DS_Store
+
+# 使用者設定（含裝置名稱，每台電腦不同）
+config.yaml
+
+# 錄音輸出（含大量 WAV 檔案）
+transcripts/
