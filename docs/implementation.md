@@ -1,7 +1,7 @@
 # Meeting Scribe 開發規劃文件
 
-> 最後更新：2026-03-08
-> 狀態：待開發
+> 最後更新：2026-03-10
+> 狀態：開發中
 
 ## 概述
 
@@ -271,6 +271,7 @@ opencc-python-reimplemented>=0.1.7
 
 - [ ] Windows / Linux 平台同時擷取麥克風 + 系統音訊的具體實作方式（程式層面雙串流合併 vs 系統層面合併）
 - [ ] VAD 片段過長時的強制切段閾值（建議 30 秒）
+- [ ] Apple Silicon MPS 支援（目前 Mac 使用 CPU int8，可考慮加入 `torch.backends.mps.is_available()` 偵測）
 
 ---
 
@@ -292,6 +293,14 @@ opencc-python-reimplemented>=0.1.7
 | 03-08 | Queue 待處理數量 debug | 主迴圈在聲道 debug 行後方附加顯示 `Queue: N`，方便觀察 ASR 處理速度 |
 | 03-08 | Queue 記憶體佔用優化 | Queue 改為只存 WAV 檔案路徑而非音訊陣列，ASR 從硬碟讀取，因現已存 WAV 故改動小且硬碟讀取時間相對 ASR 推理可忽略 |
 | 03-08 | 時間戳精度 | 時間戳與 WAV 檔名加入毫秒，避免同秒內片段無法區分或檔名衝突 |
+| 03-10 | Windows 音訊擷取 | soundcard WASAPI Loopback 在部分裝置上取樣率轉換品質差，改用 pyaudiowpatch + scipy.signal.resample_poly |
+| 03-10 | Windows 聲道數問題 | soundcard 強制讀取 4 聲道導致 2 聲道裝置（EDIFIER）音訊失真，改用 pyaudiowpatch 直接讀取裝置原生聲道數 |
+| 03-10 | Ctrl+C 無法中斷 | pyaudio 大塊讀取（chunk）時阻塞 signal handler，改為 512 frames 小塊讀取讓 Ctrl+C 能即時響應 |
+| 03-10 | GPU 未被使用 | PyPI 預設安裝 CPU 版 torch，需從 PyTorch CUDA index 重裝 |
+| 03-10 | Python 3.14 不相容 | PyTorch CUDA wheel 只到 cp313，改用 Python 3.12 建立 venv |
+| 03-10 | torchaudio DLL 失敗 | Windows 上 torchaudio CUDA DLL 載入失敗（WinError 127），在 detector.py 用 sys.modules 注入空殼模組繞過 |
+| 03-10 | 無限安裝迴圈 | _ensure_cuda_torch() 同時安裝 torchaudio 時，uv 因相依性把 torch 降版為 CPU，移除 torchaudio 安裝後解決 |
+| 03-10 | requirements.txt 補齊 | 新增 pyaudiowpatch 和 scipy，加上 `sys_platform == "win32"` marker 避免影響 Mac/Linux |
 
 ---
 
@@ -312,3 +321,10 @@ opencc-python-reimplemented>=0.1.7
 | 03-08 | 新增 ASR Queue 待處理數量 debug 輸出 |
 | 03-08 | Queue 改為傳遞 WAV 檔案路徑，ASR 從硬碟讀取音訊，減少記憶體佔用 |
 | 03-08 | 時間戳與 WAV 檔名加入毫秒精度，避免同秒內片段衝突 |
+| 03-10 | Windows 音訊擷取改用 pyaudiowpatch，修正取樣率轉換與聲道數問題 |
+| 03-10 | Ctrl+C 改為 512 frames 小塊讀取，修正 signal handler 無法即時觸發的問題 |
+| 03-10 | 新增 _ensure_cuda_torch()，程式啟動時自動偵測 NVIDIA GPU 並安裝 CUDA torch |
+| 03-10 | detector.py 新增 torchaudio 空殼 mock，繞過 Windows DLL 載入失敗問題 |
+| 03-10 | requirements.txt 新增 pyaudiowpatch 和 scipy（Windows only platform marker）|
+| 03-10 | 新增 docs/windows-cuda-setup.md，記錄 Windows CUDA 環境問題排查過程 |
+| 03-10 | SPEC.md 更新技術選型、平台需求、依賴套件說明 |

@@ -99,6 +99,23 @@ def select_device(config_device_name=None):
             sys.exit(0)
 
 
+def _find_pyaudio_loopback_device(device_name):
+    """在 pyaudiowpatch 中找到對應的 loopback 裝置，回傳 (pyaudio_instance, device_info)"""
+    import pyaudiowpatch as pyaudio
+    p = pyaudio.PyAudio()
+    wasapi_info = p.get_host_api_info_by_type(pyaudio.paWASAPI)
+    name_lower = device_name.lower()
+    for i in range(p.get_device_count()):
+        dev = p.get_device_info_by_index(i)
+        if dev['hostApi'] != wasapi_info['index']:
+            continue
+        if not dev.get('isLoopbackDevice', False):
+            continue
+        if name_lower in dev['name'].lower():
+            return p, dev
+    return p, None
+
+
 class AudioCapture:
     """音訊擷取器，以串流方式產出音訊區塊"""
 
@@ -111,26 +128,82 @@ class AudioCapture:
     def start(self):
         """開始擷取音訊，以 generator 方式產出單聲道音訊區塊（numpy array）"""
         self._running = True
-        print(f"[DEBUG] device.name: {self.device.name}")
-        print(f"[DEBUG] device.channels: {self.device.channels}")
-        # 嘗試強制讀取 4 個聲道（聚合裝置：2ch 麥克風 + 2ch BlackHole）
+        plat = get_platform()
+
+        if plat == "windows":
+            yield from self._start_windows()
+        else:
+            yield from self._start_soundcard()
+
+    def _start_windows(self):
+        """Windows：使用 pyaudiowpatch 錄製 WASAPI loopback，並 resample 到目標取樣率"""
+        from scipy.signal import resample_poly
+        from math import gcd
+        import pyaudiowpatch as pyaudio
+
+        p, dev = _find_pyaudio_loopback_device(self.device.name)
+        if dev is None:
+            print(f"警告：找不到 {self.device.name} 的 loopback 裝置，改用 soundcard。")
+            p.terminate()
+            yield from self._start_soundcard()
+            return
+
+        native_sr = int(dev['defaultSampleRate'])
+        ch = dev['maxInputChannels']
+        chunk_native = int(native_sr * self.chunk_samples / self.sample_rate)
+        g = gcd(native_sr, self.sample_rate)
+        up, down = self.sample_rate // g, native_sr // g
+
+        print(f"[DEBUG] pyaudio loopback: {dev['name']} | sr={native_sr} | ch={ch}")
+
+        read_size = 512  # 小塊讀取讓 Ctrl+C 能即時中斷
+        stream = p.open(
+            format=pyaudio.paFloat32,
+            channels=ch,
+            rate=native_sr,
+            input=True,
+            input_device_index=dev['index'],
+            frames_per_buffer=read_size,
+        )
         try:
-            rec_channels = max(self.device.channels, 4)
-        except Exception:
-            rec_channels = 4
-        print(f"[DEBUG] 嘗試讀取聲道數: {rec_channels}")
-        with self.device.recorder(samplerate=self.sample_rate, channels=rec_channels) as recorder:
-            first_chunk = True
+            buf = []
+            buf_len = 0
             while self._running:
-                # 錄製一個區塊，shape: (chunk_samples, channels)
+                raw = stream.read(read_size, exception_on_overflow=False)
+                buf.append(np.frombuffer(raw, dtype=np.float32).reshape(-1, ch))
+                buf_len += read_size
+                if buf_len >= chunk_native:
+                    data = np.concatenate(buf)[:chunk_native]
+                    buf = []
+                    buf_len = 0
+                    ch_levels = [np.abs(data[:, c]).max() for c in range(ch)]
+                    ch_info = " | ".join(f"ch{c}:{lv:.4f}" for c, lv in enumerate(ch_levels))
+                    print(f"\r[DEBUG] {ch_info}", end="", flush=True)
+                    mono_native = np.mean(data, axis=1).astype(np.float32)
+                    mono = resample_poly(mono_native, up, down).astype(np.float32)
+                    yield mono
+        finally:
+            stream.stop_stream()
+            stream.close()
+            p.terminate()
+
+    def _start_soundcard(self):
+        """macOS / Linux：使用 soundcard 錄音"""
+        plat = get_platform()
+        try:
+            if plat == "macos":
+                rec_channels = max(self.device.channels, 4)
+            else:
+                rec_channels = self.device.channels
+        except Exception:
+            rec_channels = 2
+
+        with self.device.recorder(samplerate=self.sample_rate, channels=rec_channels) as recorder:
+            while self._running:
                 data = recorder.record(numframes=self.chunk_samples)
-                if first_chunk:
-                    print(f"[DEBUG] data shape: {data.shape}, dtype: {data.dtype}")
-                    first_chunk = False
-                ch_levels = [np.abs(data[:, ch]).max() for ch in range(data.shape[1])]
-                ch_info = " | ".join(f"ch{ch}:{lv:.4f}" for ch, lv in enumerate(ch_levels))
+                ch_levels = [np.abs(data[:, c]).max() for c in range(data.shape[1])]
+                ch_info = " | ".join(f"ch{c}:{lv:.4f}" for c, lv in enumerate(ch_levels))
                 print(f"\r[DEBUG] {ch_info}", end="", flush=True)
-                # 混合所有聲道為單聲道
                 mono = np.mean(data, axis=1).astype(np.float32)
                 yield mono
 

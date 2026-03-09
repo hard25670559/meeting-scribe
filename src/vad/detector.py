@@ -10,12 +10,17 @@ class VADDetector:
         self.sample_rate = sample_rate
         self.silence_threshold = silence_threshold
 
-        # 載入 Silero VAD 模型
-        self.model, self.utils = torch.hub.load(
-            repo_or_dir="snakers4/silero-vad",
-            model="silero_vad",
-            trust_repo=True,
-        )
+        # silero_vad 會 import torchaudio，但我們不需要它的功能
+        # 若 torchaudio DLL 載入失敗，注入空模組來繞過
+        import sys, types
+        if 'torchaudio' not in sys.modules:
+            try:
+                import torchaudio  # noqa
+            except OSError:
+                sys.modules['torchaudio'] = types.ModuleType('torchaudio')
+
+        from silero_vad import load_silero_vad
+        self.model = load_silero_vad()
         self.model.eval()
 
         # 狀態
@@ -24,6 +29,7 @@ class VADDetector:
         self._silence_start = None
         self._speech_start_time = None
         self._current_time = 0.0
+        self.last_speech_prob = 0.0
 
     def reset(self):
         """重置 VAD 狀態"""
@@ -60,6 +66,7 @@ class VADDetector:
 
             tensor = torch.from_numpy(window).float()
             speech_prob = self.model(tensor, self.sample_rate).item()
+            self.last_speech_prob = speech_prob
 
             is_speech = speech_prob > 0.5
             window_time = window_size / self.sample_rate

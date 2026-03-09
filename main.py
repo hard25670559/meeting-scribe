@@ -1,8 +1,50 @@
 import os
+import sys
 import wave
 import queue
 import signal
 import threading
+import platform
+import subprocess
+
+
+def _ensure_cuda_torch():
+    """Windows + NVIDIA GPU 時，確保安裝 CUDA 版 torch"""
+    if platform.system() != "Windows":
+        return
+    try:
+        import torch
+        if torch.cuda.is_available():
+            return  # 已經是 CUDA 版
+    except ImportError:
+        pass
+
+    # 檢查是否有 NVIDIA GPU
+    try:
+        result = subprocess.run(["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
+                                capture_output=True, text=True, timeout=5)
+        if result.returncode != 0 or not result.stdout.strip():
+            return  # 沒有 NVIDIA GPU
+        gpu_name = result.stdout.strip().splitlines()[0]
+    except Exception:
+        return  # nvidia-smi 不存在
+
+    print(f"偵測到 NVIDIA GPU：{gpu_name}")
+    print("目前 torch 不支援 CUDA，正在安裝 CUDA 版本（約 2GB）...")
+    cuda_index = "https://download.pytorch.org/whl/cu121"
+    result = subprocess.run(["uv", "pip", "install", "torch",
+                             "--reinstall-package", "torch",
+                             "--index-url", cuda_index])
+    if result.returncode != 0:
+        print("自動安裝失敗，請手動執行：")
+        print(f"  uv pip install torch --index-url {cuda_index}")
+        print("若 Python 版本過新（>3.13），請改用 Python 3.12 重建 venv。")
+        sys.exit(1)
+    print("安裝完成，請重新執行程式。")
+    sys.exit(0)
+
+
+_ensure_cuda_torch()
 
 from src.config import get_config, save_device_to_config
 from src.audio.capture import AudioCapture, select_device
@@ -74,7 +116,18 @@ def main():
         print("\n\n正在停止...")
         capture.stop()
 
-        # 直接儲存已完成的逐字稿，不等待未完成的 ASR 辨識
+        # 輸出最後一段未完成的語音片段
+        result = vad.flush()
+        if result:
+            audio_segment, start_time, end_time = result
+            import numpy as np
+            segment_level = np.abs(audio_segment).max()
+            if segment_level > 0.01:
+                wav_path = save_segment_wav(audio_segment, start_time, end_time, sample_rate)
+                text = transcriber.transcribe_file(wav_path)
+                if text:
+                    writer.add_entry(text, start_time, end_time)
+
         writer.save()
         os._exit(0)
 
@@ -124,8 +177,7 @@ def main():
     # 8. 主執行緒：音訊擷取 → VAD → 片段放入 Queue
     import numpy as np
     for audio_chunk in capture.start():
-        # 在 capture 的 channel debug 後方附加 queue 資訊
-        print(f" | Queue: {asr_queue.qsize()}", end="", flush=True)
+        print(f" | VAD: {vad.last_speech_prob:.3f} | Queue: {asr_queue.qsize()}", end="", flush=True)
         result = vad.process_chunk(audio_chunk)
         if result:
             audio_segment, start_time, end_time = result
