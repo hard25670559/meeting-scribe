@@ -86,6 +86,7 @@ def main():
     vad = VADDetector(
         sample_rate=sample_rate,
         silence_threshold=config["vad"]["silence_threshold"],
+        speech_threshold=config["vad"]["speech_threshold"],
     )
     print("VAD 模型就緒。")
 
@@ -142,6 +143,7 @@ def main():
     print(f"  裝置：{device.name}")
     print(f"  繁體轉換：{'開啟' if config['asr']['convert_traditional'] else '關閉'}")
     print(f"  靜音閾值：{config['vad']['silence_threshold']} 秒")
+    print(f"  語音判定閾值：{config['vad']['speech_threshold']}")
     print(f"  輸出目錄：{config['output']['directory']}")
     print("-" * 50)
     print("錄音中... 按 Ctrl+C 停止")

@@ -6,9 +6,10 @@ import torch
 class VADDetector:
     """使用 Silero VAD 偵測語音活動，將音訊串流切分為語音片段"""
 
-    def __init__(self, sample_rate=16000, silence_threshold=1.5):
+    def __init__(self, sample_rate=16000, silence_threshold=1.5, speech_threshold=0.5):
         self.sample_rate = sample_rate
         self.silence_threshold = silence_threshold
+        self.speech_threshold = speech_threshold
 
         # silero_vad 會 import torchaudio，但我們不需要它的功能
         # 若 torchaudio DLL 載入失敗，注入空模組來繞過
@@ -68,7 +69,7 @@ class VADDetector:
             speech_prob = self.model(tensor, self.sample_rate).item()
             self.last_speech_prob = speech_prob
 
-            is_speech = speech_prob > 0.5
+            is_speech = speech_prob > self.speech_threshold
             window_time = window_size / self.sample_rate
 
             if is_speech:

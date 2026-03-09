@@ -32,7 +32,8 @@ audio:
   sample_rate: 16000      # 取樣率
 
 vad:
-  silence_threshold: 1.5  # 靜音多久視為一段結束（秒）
+  silence_threshold: 1.5  # 靜音多久視為一段結束（秒）；越小切越碎，建議 0.5~2.0
+  speech_threshold: 0.5   # speech_prob 超過此值才算有人說話（0.0~1.0）；越大切越激進，建議 0.5~0.7
 
 asr:
   model: large-v3         # Whisper 模型大小
@@ -301,6 +302,7 @@ opencc-python-reimplemented>=0.1.7
 | 03-10 | torchaudio DLL 失敗 | Windows 上 torchaudio CUDA DLL 載入失敗（WinError 127），在 detector.py 用 sys.modules 注入空殼模組繞過 |
 | 03-10 | 無限安裝迴圈 | _ensure_cuda_torch() 同時安裝 torchaudio 時，uv 因相依性把 torch 降版為 CPU，移除 torchaudio 安裝後解決 |
 | 03-10 | requirements.txt 補齊 | 新增 pyaudiowpatch 和 scipy，加上 `sys_platform == "win32"` marker 避免影響 Mac/Linux |
+| 03-10 | VAD speech_threshold 可設定 | Mac 音訊乾淨導致切段比 Windows 更激進，新增 `speech_threshold` 參數讓使用者自行調整語音判定敏感度 |
 
 ---
 
@@ -328,3 +330,4 @@ opencc-python-reimplemented>=0.1.7
 | 03-10 | requirements.txt 新增 pyaudiowpatch 和 scipy（Windows only platform marker）|
 | 03-10 | 新增 docs/windows-cuda-setup.md，記錄 Windows CUDA 環境問題排查過程 |
 | 03-10 | SPEC.md 更新技術選型、平台需求、依賴套件說明 |
+| 03-10 | 新增 VAD `speech_threshold` 可設定參數，更新 config.yaml、config.yaml.example、src/config.py、src/vad/detector.py、main.py、SPEC.md |

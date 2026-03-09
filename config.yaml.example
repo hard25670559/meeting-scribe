@@ -5,7 +5,8 @@ audio:
 
 # VAD 設定
 vad:
-  silence_threshold: 1.5  # 靜音多久視為一段結束（秒）
+  silence_threshold: 1.5  # 靜音多久視為一段結束（秒）；越小切越碎，建議 0.5~2.0
+  speech_threshold: 0.5   # speech_prob 超過此值才算有人說話（0.0~1.0）；越大切越激進，建議 0.5~0.7
 
 # ASR 設定
 asr:

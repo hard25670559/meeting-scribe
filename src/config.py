@@ -11,6 +11,7 @@ DEFAULT_CONFIG = {
     },
     "vad": {
         "silence_threshold": 1.5,
+        "speech_threshold": 0.5,
     },
     "asr": {
         "model": "large-v3",
