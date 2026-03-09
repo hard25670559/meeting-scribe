@@ -7,9 +7,11 @@
 - 同時擷取系統音訊與麥克風，即時轉換為逐字稿
 - 使用 Faster Whisper（large-v3）進行高準確度語音辨識
 - 辨識結果自動轉換為繁體中文（OpenCC s2twp 台灣慣用詞）
+- VAD 語音切段可調整靜音閾值與語音判定敏感度
 - 逐行即時寫入檔案，避免程式崩潰時遺失資料
 - VAD 語音片段同步存為 WAV 檔，供除錯與回聽
 - 支援 Windows、Linux、macOS 三大平台
+- Windows 自動偵測 NVIDIA GPU 並安裝 CUDA 版 torch
 
 ## 架構概覽
 
@@ -24,7 +26,8 @@ ASR 執行緒：Queue（WAV 路徑）→ Faster Whisper → OpenCC 簡轉繁 →
 
 | 元件 | 技術 | 說明 |
 |------|------|------|
-| 音訊擷取 | soundcard | 跨平台音訊擷取 |
+| 音訊擷取（Windows）| pyaudiowpatch | WASAPI Loopback，原生支援系統音訊擷取 |
+| 音訊擷取（macOS/Linux）| soundcard | 跨平台音訊擷取套件 |
 | VAD | Silero VAD | 語音活動偵測，切分語音段落 |
 | ASR | Faster Whisper | Whisper 加速版，支援多語言 |
 | 繁體轉換 | OpenCC | s2twp 模式，含台灣慣用詞 |
@@ -33,16 +36,36 @@ ASR 執行緒：Queue（WAV 路徑）→ Faster Whisper → OpenCC 簡轉繁 →
 
 ### 前置需求
 
-- Python 3.10+
-- macOS 需額外安裝 [BlackHole](https://github.com/ExistentialAudio/BlackHole)（`brew install blackhole-2ch`）
+| 平台 | Python 版本 | 備註 |
+|------|------------|------|
+| Windows | **3.12** | 3.13+ 與 PyTorch CUDA wheel 不相容 |
+| macOS | 3.12 或 3.13 | 需額外安裝 BlackHole（見下方說明）|
+| Linux | 3.12 或 3.13 | 需 PulseAudio 或 PipeWire |
 
 ### 安裝
+
+**使用 uv（推薦）：**
+
+```bash
+# 建立虛擬環境（Windows 請指定 3.12）
+uv venv --python 3.12
+
+# 安裝依賴
+uv pip install -r requirements.txt
+
+# 複製設定檔
+cp config.yaml.example config.yaml
+```
+
+**使用傳統 venv：**
 
 ```bash
 # 建立虛擬環境
 python -m venv .venv
-source .venv/bin/activate  # macOS / Linux
-# .venv\Scripts\activate   # Windows
+
+# 啟動虛擬環境
+source .venv/bin/activate     # macOS / Linux
+.venv\Scripts\activate        # Windows（PowerShell）
 
 # 安裝依賴
 pip install -r requirements.txt
@@ -54,8 +77,18 @@ cp config.yaml.example config.yaml
 ### 執行
 
 ```bash
+# 使用 uv
+uv run python main.py
+
+# 或啟動 venv 後直接執行
 python main.py
+
+# Windows 也可直接指定 venv 內的 Python
+.venv\Scripts\python main.py
 ```
+
+> **Windows 首次執行說明**
+> 若偵測到 NVIDIA GPU 但尚未安裝 CUDA 版 torch，程式會自動安裝（約 2GB），完成後需重新執行一次。
 
 首次執行會自動下載 Whisper 模型（large-v3 約 3GB），之後啟動會列出可用音訊裝置供選擇。選擇裝置後開始錄音與辨識，按 `Ctrl+C` 停止。
 
@@ -89,7 +122,8 @@ audio:
   sample_rate: 16000
 
 vad:
-  silence_threshold: 1.5  # 靜音多久視為一段結束（秒）
+  silence_threshold: 1.5  # 靜音多久視為一段結束（秒）；越小切越碎，建議 0.5~2.0
+  speech_threshold: 0.5   # speech_prob 超過此值才算有人說話；越大切越激進，建議 0.5~0.7
 
 asr:
   model: large-v3        # Whisper 模型大小
@@ -112,6 +146,14 @@ macOS 需透過 BlackHole 虛擬音訊裝置擷取系統音訊：
 5. 系統音訊輸出切換至多重輸出裝置
 6. 程式擷取時選擇聚合裝置
 
+## Windows 音訊設定
+
+Windows 透過 WASAPI Loopback 擷取系統音訊，**不需要額外安裝虛擬音訊裝置**。
+
+程式使用 pyaudiowpatch 自動尋找目前播放裝置的 Loopback 輸入，並自動處理取樣率轉換。
+
+> 若有 NVIDIA GPU，首次執行會自動安裝 CUDA 版 torch，詳見 [docs/windows-cuda-setup.md](docs/windows-cuda-setup.md)。
+
 ## 專案結構
 
 ```
@@ -121,7 +163,8 @@ meeting-scribe/
 ├── requirements.txt         # Python 依賴
 ├── docs/
 │   ├── SPEC.md              # 開發規格書
-│   └── implementation.md    # 開發規劃文件
+│   ├── implementation.md    # 開發規劃文件
+│   └── windows-cuda-setup.md  # Windows CUDA 環境問題排查
 └── src/
     ├── config.py             # 設定檔讀取
     ├── audio/
