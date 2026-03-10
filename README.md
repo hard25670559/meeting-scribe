@@ -5,13 +5,14 @@
 ## 功能特色
 
 - 同時擷取系統音訊與麥克風，即時轉換為逐字稿
-- 使用 Faster Whisper（large-v3）進行高準確度語音辨識
+- 使用 Faster Whisper 或 mlx-whisper 進行高準確度語音辨識
 - 辨識結果自動轉換為繁體中文（OpenCC s2twp 台灣慣用詞）
 - VAD 語音切段可調整靜音閾值與語音判定敏感度
 - 逐行即時寫入檔案，避免程式崩潰時遺失資料
 - VAD 語音片段同步存為 WAV 檔，供除錯與回聽
 - 支援 Windows、Linux、macOS 三大平台
 - Windows 自動偵測 NVIDIA GPU 並安裝 CUDA 版 torch
+- Apple Silicon Mac 支援 mlx-whisper GPU 加速（比 CPU 快 3-5 倍）
 
 ## 架構概覽
 
@@ -29,7 +30,8 @@ ASR 執行緒：Queue（WAV 路徑）→ Faster Whisper → OpenCC 簡轉繁 →
 | 音訊擷取（Windows）| pyaudiowpatch | WASAPI Loopback，原生支援系統音訊擷取 |
 | 音訊擷取（macOS/Linux）| soundcard | 跨平台音訊擷取套件 |
 | VAD | Silero VAD | 語音活動偵測，切分語音段落 |
-| ASR | Faster Whisper | Whisper 加速版，支援多語言 |
+| ASR（跨平台）| Faster Whisper | CTranslate2 引擎，支援 CPU / CUDA |
+| ASR（Apple Silicon）| mlx-whisper | Apple MLX 框架，GPU 加速，需 ffmpeg |
 | 繁體轉換 | OpenCC | s2twp 模式，含台灣慣用詞 |
 
 ## 快速開始
@@ -126,9 +128,10 @@ vad:
   speech_threshold: 0.5   # speech_prob 超過此值才算有人說話；越大切越激進，建議 0.5~0.7
 
 asr:
-  model: large-v3        # Whisper 模型大小
-  language: zh            # 辨識語言，null 為自動偵測
-  device: auto            # 推理裝置：auto / cpu / cuda
+  backend: faster-whisper  # faster-whisper | mlx-whisper（Apple Silicon 專用）
+  model: large-v3          # large-v3 / large-v3-turbo / medium / small
+  language: zh             # 辨識語言，null 為自動偵測
+  device: auto             # faster-whisper 用：auto / cpu / cuda
   convert_traditional: true
 
 output:

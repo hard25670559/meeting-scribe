@@ -14,6 +14,7 @@ DEFAULT_CONFIG = {
         "speech_threshold": 0.5,
     },
     "asr": {
+        "backend": "faster-whisper",
         "model": "large-v3",
         "language": "zh",
         "device": "auto",

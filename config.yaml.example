@@ -10,9 +10,12 @@ vad:
 
 # ASR 設定
 asr:
-  model: large-v3        # Whisper 模型大小
-  language: zh            # 辨識語言，null 為自動偵測
-  device: auto            # 推理裝置：auto / cpu / cuda
+  backend: faster-whisper  # 推理後端：faster-whisper | mlx-whisper
+                           # faster-whisper：跨平台，Windows CUDA 加速，Mac 用 CPU
+                           # mlx-whisper：僅 Apple Silicon Mac，GPU 加速，需安裝 ffmpeg
+  model: large-v3          # Whisper 模型大小：large-v3 / large-v3-turbo / medium / small / base / tiny
+  language: zh             # 辨識語言，null 為自動偵測
+  device: auto             # 推理裝置（faster-whisper 用）：auto / cpu / cuda
   convert_traditional: true  # 簡體轉繁體中文（s2twp 台灣慣用詞）
 
 # 輸出設定

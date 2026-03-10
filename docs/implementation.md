@@ -36,9 +36,10 @@ vad:
   speech_threshold: 0.5   # speech_prob 超過此值才算有人說話（0.0~1.0）；越大切越激進，建議 0.5~0.7
 
 asr:
-  model: large-v3         # Whisper 模型大小
-  language: zh            # 辨識語言，null 為自動偵測
-  device: auto            # 推理裝置：auto / cpu / cuda
+  backend: faster-whisper  # 推理後端：faster-whisper | mlx-whisper
+  model: large-v3          # Whisper 模型大小：large-v3 / large-v3-turbo / medium / small
+  language: zh             # 辨識語言，null 為自動偵測
+  device: auto             # 推理裝置（faster-whisper 用）：auto / cpu / cuda
   convert_traditional: true  # 簡體轉繁體中文（s2twp 台灣慣用詞）
 
 output:
@@ -119,14 +120,17 @@ output:
 - 辨識結果自動轉換為繁體中文
 
 ### 技術規格
-- ASR 引擎：Faster Whisper
-- 預設模型：`large-v3`
+- ASR 後端（`backend`）：
+  - `faster-whisper`：跨平台，CTranslate2 引擎，Windows 支援 CUDA，Mac 使用 CPU
+  - `mlx-whisper`：僅 Apple Silicon Mac，Apple MLX 框架 GPU 加速，需安裝 ffmpeg
+- 預設模型：`large-v3`；推薦 Apple Silicon 用 `large-v3-turbo`（快約 8 倍）
 - 預設語言：`zh`（中文）
-- 推理裝置：auto（自動選擇 GPU / CPU）
+- 推理裝置：`device: auto`（faster-whisper 用，mlx-whisper 自動使用 Apple Silicon GPU）
 - 繁體轉換：OpenCC `s2twp` 模式（簡體 → 台灣繁體，含慣用詞轉換）
 
 ### 實作細節
-- [ ] 初始化 Faster Whisper 模型（依設定選擇模型大小與裝置）
+- [ ] 依 `backend` 設定初始化對應模型
+- [ ] `mlx-whisper` 啟動時用 `shutil.which("ffmpeg")` 偵測 ffmpeg，未安裝則提示 `brew install ffmpeg`
 - [ ] 在獨立執行緒中運行，透過 Queue 接收 WAV 檔案路徑（非音訊資料本身），從硬碟讀取音訊進行辨識
 - [ ] 辨識結果使用 OpenCC `s2twp` 轉換為繁體中文
 - [ ] `convert_traditional: false` 時跳過轉換
@@ -134,7 +138,7 @@ output:
 
 ### 注意事項
 - ASR 在獨立執行緒中運行，避免辨識時阻塞主執行緒的錄音與 VAD
-- large-v3 模型約需 3GB+ 記憶體，首次執行會自動下載
+- large-v3 模型約需 3GB+ 記憶體，首次執行會自動下載（mlx-whisper 從 mlx-community HuggingFace repo 下載）
 - 中英文混合場景：`language: zh` 時大部分英文術語能正確保留
 - 若需自動語言偵測，設定 `language: null`
 
@@ -303,6 +307,9 @@ opencc-python-reimplemented>=0.1.7
 | 03-10 | 無限安裝迴圈 | _ensure_cuda_torch() 同時安裝 torchaudio 時，uv 因相依性把 torch 降版為 CPU，移除 torchaudio 安裝後解決 |
 | 03-10 | requirements.txt 補齊 | 新增 pyaudiowpatch 和 scipy，加上 `sys_platform == "win32"` marker 避免影響 Mac/Linux |
 | 03-10 | VAD speech_threshold 可設定 | Mac 音訊乾淨導致切段比 Windows 更激進，新增 `speech_threshold` 參數讓使用者自行調整語音判定敏感度 |
+| 03-10 | Mac 辨識速度慢 | faster-whisper 在 Mac 只能用 CPU，新增 mlx-whisper backend 支援 Apple Silicon GPU 加速 |
+| 03-10 | mlx-whisper 需要 ffmpeg | mlx-whisper 用 ffmpeg 讀取音訊，在 `_init_mlx` 啟動時用 `shutil.which` 偵測，未安裝則提示 `brew install ffmpeg` |
+| 03-10 | backend vs model 設計 | backend 指推理套件（faster-whisper / mlx-whisper），model 指模型大小（large-v3 等），兩者獨立設定 |
 
 ---
 
@@ -331,3 +338,5 @@ opencc-python-reimplemented>=0.1.7
 | 03-10 | 新增 docs/windows-cuda-setup.md，記錄 Windows CUDA 環境問題排查過程 |
 | 03-10 | SPEC.md 更新技術選型、平台需求、依賴套件說明 |
 | 03-10 | 新增 VAD `speech_threshold` 可設定參數，更新 config.yaml、config.yaml.example、src/config.py、src/vad/detector.py、main.py、SPEC.md |
+| 03-10 | 新增 mlx-whisper backend 支援 Apple Silicon GPU 加速，更新 src/asr/transcriber.py、src/config.py、main.py、requirements.txt、config.yaml、config.yaml.example、SPEC.md、implementation.md、README.md |
+| 03-10 | mlx-whisper 啟動時自動偵測 ffmpeg，未安裝時提示 brew install ffmpeg |

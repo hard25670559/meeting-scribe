@@ -51,7 +51,7 @@ class TranscriptWriter:
 
         # 即時輸出至終端機（先清掉 debug 行再換行印出）
         line = self._format_entry(entry)
-        print(f"\r{' ' * 80}\r{line}")
+        print(f"\r{' ' * 150}\r{line}")
 
         # 逐行 append 寫入檔案
         with open(self.filepath, "a", encoding="utf-8") as f:

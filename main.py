@@ -96,6 +96,7 @@ def main():
         language=config["asr"]["language"],
         device=config["asr"]["device"],
         convert_traditional=config["asr"]["convert_traditional"],
+        backend=config["asr"]["backend"],
     )
 
     writer = TranscriptWriter(
