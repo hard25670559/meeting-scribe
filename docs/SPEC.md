@@ -235,6 +235,418 @@ uv run python main.py
 
 ---
 
+## 分散式 ASR 架構
+
+### 架構概述
+
+系統由兩個獨立、裝置無關的服務組成，可自由部署在任意機器上：
+
+| 服務 | 職責 |
+|------|------|
+| **Capture Service** | 音訊擷取、VAD 切段、產生 WAV、呼叫 Dispatcher 調度任務、收集結果寫入逐字稿 |
+| **ASR Worker Service** | 接收 WAV、Whisper 語音辨識、回傳文字結果、回報壓力評分 |
+
+每台機器可自由選擇運行哪些服務：
+
+| 部署情境 | Capture | ASR Worker |
+|---------|:---:|:---:|
+| 單機全包 | O | O |
+| 只做擷取，辨識交給其他機器 | O | X |
+| 只做辨識 | X | O |
+| 一台擷取 + 多台辨識 | 1 | N |
+
+```
+┌─ 機器 A ──────────────────────┐      ┌─ 機器 B ──────────────┐
+│                               │      │                       │
+│  Capture Service              │      │                       │
+│  ├─ 音訊擷取 + VAD            │      │                       │
+│  ├─ 產生 WAV                  │      │                       │
+│  └─ Dispatcher（調度器）       │      │                       │
+│       ├─ 查詢壓力評分          │      │                       │
+│       ├─ 分配任務              │ ───→ │  ASR Worker Service   │
+│       └─ 收集結果 → 逐字稿     │      │  ├─ 接收 WAV          │
+│              │                │      │  ├─ Whisper 辨識       │
+│              ↓                │      │  └─ 回傳文字結果       │
+│  ASR Worker Service（本機）    │      │                       │
+│  ├─ 接收 WAV                  │      └───────────────────────┘
+│  ├─ Whisper 辨識              │
+│  └─ 回傳文字結果              │      ┌─ 機器 C ──────────────┐
+│                               │      │  ASR Worker Service   │
+│                               │ ───→ │  （更多 Worker...）    │
+└───────────────────────────────┘      └───────────────────────┘
+```
+
+### 啟動方式
+
+參數優先級：**CLI 參數 > 環境變數 > 預設值**
+
+```bash
+# 同時運行 Capture + ASR Worker（單機全包）
+python main.py --capture --asr-worker
+
+# 只運行 Capture + Dispatcher（辨識交給其他機器）
+python main.py --capture
+
+# 只運行 ASR Worker 服務
+python main.py --asr-worker --port 8001
+
+# 指定推理裝置
+python main.py --asr-worker --device cuda --port 8001
+
+# 同一台機器運行多個 Worker（不同 port）
+python main.py --asr-worker --port 8001
+python main.py --asr-worker --port 8002
+```
+
+### 服務發現
+
+Capture Service 的 config 中列舉 ASR Worker 的位址：
+
+```yaml
+dispatcher:
+  workers:
+    - http://localhost:8001
+    - http://localhost:8002
+    - http://192.168.1.50:8001
+    - http://192.168.1.50:8002
+```
+
+啟動流程：
+1. Capture 啟動時，對 config 中每個 Worker 發送健康檢查（`GET /health`）
+2. Worker 回報自身狀態（模型是否載入、硬體資源等）
+3. 通過檢查的 Worker 加入可用清單
+4. 未通過的 Worker 回報錯誤訊息給使用者
+5. 運行期間持續檢查 Worker 狀態
+
+### 通訊協定
+
+使用 HTTP REST（FastAPI），ASR Worker 對外暴露以下 API：
+
+| Method | Endpoint | 說明 |
+|--------|----------|------|
+| `POST` | `/transcribe` | 上傳 WAV 檔案，回傳 `{ task_id, estimated_time }` |
+| `GET` | `/task/{task_id}` | 查詢任務狀態與結果 |
+| `DELETE` | `/task/{task_id}` | 取消任務 |
+| `GET` | `/status` | 回傳壓力評分（基礎分 + 不健康懲罰） |
+| `GET` | `/health` | Worker 自身健康檢查（模型、硬體） |
+| `PUT` | `/health` | Dispatcher 標記 Worker 健康狀態 |
+
+### Dispatcher 調度機制
+
+Dispatcher 由 Capture Service 呼叫，負責非同步管理多個任務的分配與結果收集。
+
+#### 任務分配流程
+
+```
+Capture 產生 WAV
+  ↓
+Dispatcher 查詢所有可用 Worker 的壓力評分（GET /status）
+  ↓
+選擇評分最低（最閒）的 Worker
+  ↓
+發送任務（POST /transcribe）→ Worker 回傳 { task_id, estimated_time }
+  ↓
+Dispatcher 不等待，繼續處理下一個 WAV（非同步）
+  ↓
+等到 estimated_time 後去拿結果（GET /task/{task_id}）
+  ├─ 完成 → 拿到文字 → 按時間順序插入逐字稿 ✓
+  ├─ 處理中 → 先去做別的事，過一段時間再回來拿（循環）
+  └─ 停滯/超過閾值 → 進入容錯流程
+```
+
+#### 逐字稿順序
+
+多個 Worker 同時處理不同片段，結果回來的順序可能不同。逐字稿寫入時按照音訊片段的時間戳排序插入，確保時間順序正確。
+
+#### Worker 不可用時的處理
+
+- **Worker 還能工作**（即使被標記不健康）：仍然可以分配任務，依壓力評分排序，分數高的排後面
+- **Worker 無法訪問**（斷線、錯誤中斷）：不再分配任務
+- **所有 Worker 壓力都很高**：任務仍然分配，選壓力最低的，只是處理速度較慢
+- **重複結果處理**：若任務已被轉派並從其他 Worker 拿到結果，原 Worker 後續恢復後繼續工作即可，不影響整體流程
+
+### 壓力評分系統
+
+壓力評分由 Worker 內部計算，Dispatcher 主動詢問（`GET /status`）取得。
+
+#### 評分公式
+
+```
+總壓力分數 = 基礎分數 + 不健康懲罰分數
+```
+
+#### 基礎分數（0~100）
+
+```python
+base = (
+    normalize(pending_tasks) × w1 +
+    normalize(avg_processing_time) × w2 +
+    gpu_usage × w3 +
+    cpu_usage × w4 +
+    memory_usage × w5
+)
+```
+
+- `pending_tasks`：排隊中 + 處理中的任務總數
+- `avg_processing_time`：近 N 筆任務的平均處理時間
+- `gpu_usage`：GPU 使用率（%）
+- `cpu_usage`：CPU 使用率（%）
+- `memory_usage`：記憶體使用率（%）
+
+#### 指標正規化
+
+各指標使用**歷史數據百分比**正規化至 0~100：
+
+- Worker 累積自身歷史數據，用歷史最大值當作 100%
+- 歷史最大值使用 **EMA（指數移動平均）** 平滑更新，避免極端值造成瞬間跳變：
+
+```python
+smoothed_max = smoothed_max + (new_value - smoothed_max) × smoothing_factor
+```
+
+- `smoothing_factor` 小（如 0.1）→ 平滑，極端值影響小
+- `smoothing_factor` 大（如 0.5）→ 敏感，反應快
+
+#### 權重組合
+
+Worker 根據自身推理裝置類型（GPU/CPU）選擇對應的權重組合：
+
+**GPU Worker 權重：**
+
+| 指標 | 權重 | 說明 |
+|------|------|------|
+| pending_tasks | 0.35 | 最直接反映忙碌程度 |
+| avg_processing_time | 0.25 | 反映處理能力 |
+| gpu_usage | 0.25 | GPU Worker 的核心瓶頸 |
+| cpu_usage | 0.10 | 相對不重要 |
+| memory_usage | 0.05 | 通常不是瓶頸 |
+
+**CPU Worker 權重：**
+
+| 指標 | 權重 | 說明 |
+|------|------|------|
+| pending_tasks | 0.35 | 最直接反映忙碌程度 |
+| avg_processing_time | 0.25 | 反映處理能力 |
+| gpu_usage | 0.00 | 無 GPU，不計算 |
+| cpu_usage | 0.35 | CPU Worker 的核心瓶頸 |
+| memory_usage | 0.05 | 通常不是瓶頸 |
+
+Worker 在啟動時根據模型載入的裝置（`cuda` / `cpu`）自動選擇權重組合。
+
+#### 冷啟動
+
+Worker 剛啟動時尚無歷史數據，但公式仍可運算：
+- `pending_tasks = 0`、`avg_processing_time = 0` → 任務指標為 0
+- GPU/CPU/Memory 使用率來自即時系統資源 → 有實際數值
+- 基礎分自然偏低，Dispatcher 會優先分配任務
+- 隨任務累積，歷史數據逐漸建立，分數開始反映真實壓力
+
+### 健康機制
+
+Worker 的健康狀態分為兩個獨立維度：
+
+| | Worker 自身健康 | Dispatcher 標記健康 |
+|---|---|---|
+| **判斷者** | Worker 自己 | Dispatcher |
+| **依據** | 模型是否載入、硬體是否正常、服務是否能運作 | 任務超時、進度停滯、回應異常 |
+| **意義** | 「這台機器能不能跑」 | 「你最近表現有問題，先不派任務給你」 |
+| **API** | `GET /health`（Worker 自我回報） | `PUT /health`（Dispatcher 外部標記） |
+
+兩者獨立，不互相覆蓋。Worker 自身健康正常但被 Dispatcher 標記不健康的情況是可能的（例如連續任務超時）。
+
+### 不健康懲罰與衰減機制
+
+懲罰機制**僅適用於任務表現問題**（Worker 可連線、能工作，但表現不佳）。
+
+以下情況**不使用懲罰機制**，而是由 Dispatcher 直接處理：
+- **Worker 自身不健康**（`GET /health` 回報異常）：不派任務，等 Worker 自行恢復後重新通過健康檢查才加回可用清單
+- **Worker 無法連線**（連線超時/無回應）：從可用清單移除，不派任務，Dispatcher 定期嘗試重新連線，連上後重新進行健康檢查
+
+#### 懲罰初始值
+
+依標記原因給予不同的初始懲罰分數（僅限任務表現問題）：
+
+| 標記原因 | 嚴重程度 | 懲罰初始值 |
+|---------|---------|-----------|
+| 任務超時且進度停滯 | 高 | 80 |
+| 任務超時但有進展，超過最大容忍閾值 | 中 | 50 |
+
+初始值由 Dispatcher 端的 config 設定，透過 `PUT /health` 傳送給 Worker。
+
+#### 衰減機制
+
+不健康懲罰在每次 Dispatcher 查詢壓力評分時觸發衰減：
+
+```python
+if unhealthy_penalty > 0:
+    decay = (100 - base_score) × decay_coefficient
+    unhealthy_penalty = max(0, unhealthy_penalty - decay)
+```
+
+- 基礎分越低（Worker 越健康）→ 衰減越快 → 恢復越快
+- 基礎分越高（Worker 仍在掙扎）→ 衰減越慢 → 持續被排除
+- `decay_coefficient` 可透過 config 調整（預設 0.15）
+
+#### 恢復條件
+
+使用**動態健康閾值**，基於每個 Worker 的歷史平均基礎分：
+
+```python
+recovery_threshold = historical_avg_base × recovery_ratio
+
+if total_score <= recovery_threshold:
+    mark_healthy(worker)
+```
+
+- `historical_avg_base`：Worker 歷史平均基礎分數（Dispatcher 持續追蹤更新）
+- `recovery_ratio`：略大於 1（如 1.1~1.2），代表「回到你自己的正常水準就好」
+- 每個 Worker 的閾值不同，處理速度天生較慢的機器不會被永久歧視
+
+### 容錯機制
+
+容錯是 Dispatcher 的職責。
+
+#### 任務結果收集流程
+
+Dispatcher 以事件迴圈方式非同步管理所有已發出的任務：
+
+```
+Dispatcher 主迴圈（持續運行）
+  │
+  ├─ 有新 WAV 要分配？ → 查詢壓力評分 → 選 Worker → 發送任務
+  │
+  └─ 遍歷所有已發出的任務，檢查是否該去拿結果：
+       ├─ 還沒到 estimated_time → 跳過
+       ├─ 到了 estimated_time → GET /task/{task_id}
+       │    ├─ 完成 → 收結果，按時間順序插入逐字稿 ✓
+       │    ├─ 處理中 → 更新下次檢查時間，繼續迴圈
+       │    └─ 超過閾值 → 進入容錯流程
+       └─ 上次問過還在處理中，下次檢查時間還沒到 → 跳過
+```
+
+每個任務各自有「下次該去問的時間」，到了就問，沒到就跳過，Dispatcher 不會傻等任何一個任務。
+
+#### 超過閾值的判定
+
+當 Dispatcher 去 `GET /task/{task_id}` 時，根據回應結果判定：
+
+```
+GET /task/{task_id}
+  ├─ 成功取得回應
+  │    ├─ 任務完成 → 收結果，按時間順序插入逐字稿 ✓
+  │    ├─ 任務處理中，進度有變化 → 更新下次檢查時間，繼續迴圈
+  │    ├─ 任務處理中，進度停滯 → 容錯（懲罰）
+  │    └─ 累計耗時超過最大容忍時間 → 容錯（懲罰）
+  │
+  └─ 無法取得回應（連線超時/錯誤）
+       → 容錯（移出可用清單，不懲罰）
+```
+
+各異常情況的處理差異：
+
+| 異常情況 | 說明 | 後續處理 |
+|---------|------|---------|
+| **進度停滯** | Worker 可連線，但任務進度沒有變化 | 標記不健康（加懲罰）→ 取消任務 → 轉派 |
+| **超過最大容忍時間** | Worker 可連線且有進展，但耗時遠超預估 | 標記不健康（加懲罰）→ 取消任務 → 轉派 |
+| **連線超時/錯誤** | Worker 完全連不上或回應異常 | 從可用清單移除 → 直接轉派（取消也送不出去） |
+
+共同行為：**將任務轉派給其他可用的 Worker**。
+
+差異在於：
+- 進度停滯 / 超過容忍時間 → 使用**懲罰機制**（Worker 還能工作，只是表現差）
+- 連線超時 / 錯誤 → **不使用懲罰**（Worker 無法工作，直接移出可用清單，等恢復）
+
+#### 任務取消
+
+Worker 收到取消請求（`DELETE /task/{task_id}`）時：
+
+| 任務狀態 | 行為 |
+|---------|------|
+| 排隊中（未開始） | 從 Queue 移除，不執行 |
+| 處理中（Whisper 推理中） | 中斷推理，釋放 GPU/CPU 資源 |
+
+取消機制的目的是讓 Worker 盡快騰出資源，去處理下一個任務或恢復健康狀態。
+
+### Worker 內部架構
+
+- 每個 Worker 實例載入一份 Whisper 模型
+- 單一模型實例**無法並發處理多個任務**（sequential）
+- Worker 內部有 Queue，任務依序消化：一次處理一個，其餘排隊
+- 若要在同一台機器上並行處理多個任務，需啟動多個 Worker 實例（不同 port）
+- 每個 `large-v3` 實例約需 3GB（VRAM 或 RAM）
+
+```
+Worker 實例（單一模型）
+├─ Queue：[任務3, 任務4, 任務5]  ← 排隊等待
+└─ 目前處理中：任務2              ← 一次只處理一個
+```
+
+### 分散式 ASR 設定檔
+
+#### Capture Service 端
+
+```yaml
+# Dispatcher 設定
+dispatcher:
+  workers:
+    - http://localhost:8001
+    - http://localhost:8002
+    - http://192.168.1.50:8001
+    - http://192.168.1.50:8002
+  scoring:
+    decay_coefficient: 0.15       # 不健康懲罰衰減係數
+    recovery_ratio: 1.2           # 恢復閾值 = 歷史平均 × 此值
+    smoothing_factor: 0.3         # EMA 平滑係數
+  penalty:                        # 不健康懲罰初始值（僅限任務表現問題）
+    task_timeout_stalled: 80      # 任務超時且進度停滯
+    task_timeout_slow: 50         # 任務超時但有進展，超過最大容忍閾值
+```
+
+#### ASR Worker 端
+
+```yaml
+# ASR Worker 設定
+asr_worker:
+  port: 8001                      # 服務 port
+  device: auto                    # 推理裝置：auto / cpu / cuda
+  model: large-v3                 # Whisper 模型
+  language: zh                    # 辨識語言
+  convert_traditional: true       # 簡繁轉換
+
+  # 壓力評分權重（GPU Worker 預設）
+  scoring:
+    weights:
+      pending_tasks: 0.35
+      avg_processing_time: 0.25
+      gpu_usage: 0.25
+      cpu_usage: 0.10
+      memory_usage: 0.05
+```
+
+---
+
+### 優雅關閉（Graceful Shutdown）
+
+> **本節為規劃記錄，暫不實作。**
+
+Capture Service 和 ASR Worker 都需要優雅關閉機制，確保中斷時不遺失已處理的資料，並能在重啟後恢復未完成的工作。
+
+需考慮的情境：
+
+**Capture Service 關閉時：**
+- 已發出但未收到結果的任務
+- 已產生但未分配的 WAV
+- 是否通知所有 Worker
+
+**ASR Worker 關閉時：**
+- 正在處理中的任務
+- Queue 裡排隊的任務
+- 是否通知 Dispatcher 下線
+
+兩者的核心概念相同：確保資料不遺失，並提供恢復機制。
+
+---
+
 ## 未來擴充方向（不在本次開發範圍）
 
 - 整合 LLM 自動產出會議摘要
@@ -242,3 +654,4 @@ uv run python main.py
 - 支援多講者辨識（Speaker Diarization）
 - 支援 SRT / VTT 字幕格式輸出
 - Docker 容器化部署
+- 安全性（API 認證）
