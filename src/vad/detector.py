@@ -98,6 +98,8 @@ class VADDetector:
                         end_time = self._current_time
 
                         self._in_speech = False
+                        # 明確釋放緩衝區
+                        del self._speech_buffer
                         self._speech_buffer = []
                         self._silence_start = None
                         self._speech_start_time = None
@@ -122,6 +124,8 @@ class VADDetector:
             end_time = self._current_time
 
             self._in_speech = False
+            # 明確釋放緩衝區
+            del self._speech_buffer
             self._speech_buffer = []
             self._silence_start = None
             self._speech_start_time = None

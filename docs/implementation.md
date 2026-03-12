@@ -1,6 +1,6 @@
 # Meeting Scribe 開發規劃文件
 
-> 最後更新：2026-03-10
+> 最後更新：2026-03-13
 > 狀態：開發中
 
 ## 概述
@@ -110,6 +110,7 @@ output:
 - VAD 在主執行緒中持續運行，確保錄音不中斷
 - 切好的語音片段透過 Queue 傳遞給 ASR 執行緒
 - 片段過長時考慮強制切段（避免記憶體過度使用）
+- **記憶體管理**：語音片段緩衝區在輸出後明確釋放，防止長時間運行時的記憶體堆積
 
 ---
 
@@ -141,6 +142,7 @@ output:
 - large-v3 模型約需 3GB+ 記憶體，首次執行會自動下載（mlx-whisper 從 mlx-community HuggingFace repo 下載）
 - 中英文混合場景：`language: zh` 時大部分英文術語能正確保留
 - 若需自動語言偵測，設定 `language: null`
+- **記憶體管理**：轉錄完成後立即釋放模型的 segments 物件，並定期進行垃圾回收，防止長時間運行時的記憶體洩漏
 
 ---
 
@@ -212,6 +214,32 @@ transcripts/
 │ （持續錄音不中斷）    │          │ 逐字稿輸出           │
 └─────────────────────┘          └─────────────────────┘
 ```
+
+### 記憶體管理最佳實踐
+
+為支持長時間的語音逐字稿錄製，程式實施以下記憶體最佳化措施：
+
+#### 主執行緒
+- 每個音訊區塊處理後立即釋放（`del audio_chunk`）
+- VAD 文割後的片段立即釋放（`del audio_segment`）
+- 每 10 個語音片段執行一次垃圾回收（`gc.collect()`）
+- 音量過低（≤0.01）的語音片段在儲存後刪除檔案，節省磁碟和虛擬記憶體
+
+#### ASR 執行緒
+- 每處理 5 個片段進行一次垃圾回收
+- 音訊檔案讀取後立即處理，完成後自動釋放
+
+#### VAD 模組
+- 語音片段緩衝區（`_speech_buffer`）輸出後明確刪除
+- 使用 PyTorch 張量時指定資料型態避免多餘複製
+
+#### ASR 模組（Whisper）
+- 轉錄完成後立即釋放 segments 和 info 物件
+- 避免模型推理快取在記憶體中累積
+
+#### Windows 音訊擷取
+- 使用 numpy `.copy()` 製作複本而非 `frombuffer()` 視圖
+- 音訊緩衝區 `buf` 在每次分割後明確刪除
 
 ### 注意事項
 - 主執行緒負責錄音與 VAD，確保 ASR 辨識期間錄音持續進行
@@ -313,9 +341,9 @@ opencc-python-reimplemented>=0.1.7
 
 ---
 
-## 變更記錄
+## 異動記錄
 
-| 日期 | 變更內容 |
+| 日期 | 異動內容 |
 |------|----------|
 | 03-08 | 初始版本，依據 SPEC.md 建立開發規劃 |
 | 03-08 | 新增 OpenCC 繁體中文轉換需求 |
@@ -340,3 +368,7 @@ opencc-python-reimplemented>=0.1.7
 | 03-10 | 新增 VAD `speech_threshold` 可設定參數，更新 config.yaml、config.yaml.example、src/config.py、src/vad/detector.py、main.py、SPEC.md |
 | 03-10 | 新增 mlx-whisper backend 支援 Apple Silicon GPU 加速，更新 src/asr/transcriber.py、src/config.py、main.py、requirements.txt、config.yaml、config.yaml.example、SPEC.md、implementation.md、README.md |
 | 03-10 | mlx-whisper 啟動時自動偵測 ffmpeg，未安裝時提示 brew install ffmpeg |
+| 03-13 | 修復記憶體洩漏：VAD 語音片段緩衝區、Windows 音訊 buf 列表、Whisper segments 物件未釋放 |
+| 03-13 | 新增記憶體管理最佳化：定期垃圾回收、明確 del 釋放、numpy array 複本管理 |
+| 03-13 | 新增音量過低檔案自動刪除功能（節省磁碟空間和虛擬記憶體） |
+| 03-13 | 更新 SPEC.md 與 implementation.md 的記憶體管理章節 |

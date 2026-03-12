@@ -6,6 +6,7 @@ import signal
 import threading
 import platform
 import subprocess
+import gc
 
 
 def _ensure_cuda_torch():
@@ -55,6 +56,8 @@ from src.output.writer import TranscriptWriter
 
 def asr_worker(asr_queue, transcriber, writer):
     """ASR 執行緒：持續從 Queue 取出 WAV 檔案路徑進行辨識"""
+    import gc
+    process_count = 0
     while True:
         item = asr_queue.get()
         if item is None:
@@ -64,6 +67,11 @@ def asr_worker(asr_queue, transcriber, writer):
         text = transcriber.transcribe_file(wav_path)
         if text:
             writer.add_entry(text, start_time, end_time)
+        
+        process_count += 1
+        # 每處理 5 個片段進行垃圾回收
+        if process_count % 5 == 0:
+            gc.collect()
 
 
 def main():
@@ -182,16 +190,38 @@ def main():
     for audio_chunk in capture.start():
         print(f" | VAD: {vad.last_speech_prob:.3f} | Queue: {asr_queue.qsize()}", end="", flush=True)
         result = vad.process_chunk(audio_chunk)
+        # 主動釋放 audio_chunk
+        del audio_chunk
+        
         if result:
             audio_segment, start_time, end_time = result
             # 儲存每個 VAD 片段為 WAV
             wav_path = save_segment_wav(audio_segment, start_time, end_time, sample_rate)
+            # 明確釋放片段
+            del audio_segment
+            
             # 過濾音量過低的片段，避免 Whisper 靜音幻覺
-            segment_level = np.abs(audio_segment).max()
+            import numpy as np
+            wav_data = wave.open(str(wav_path), 'rb')
+            frames = wav_data.readframes(wav_data.getnframes())
+            wav_data.close()
+            audio_array = np.frombuffer(frames, dtype=np.int16).astype(np.float32) / 32768.0
+            segment_level = np.abs(audio_array).max()
+            del audio_array, frames
+            
             if segment_level > 0.01:
                 asr_queue.put((wav_path, start_time, end_time))
             else:
                 print(f"\n[跳過] 音量過低 ({segment_level:.4f})，丟棄片段")
+                # 刪除音量過低的檔案以節省磁碟空間
+                try:
+                    os.remove(wav_path)
+                except:
+                    pass
+            
+            # 每 10 個片段進行一次垃圾回收
+            if segment_count % 10 == 0:
+                gc.collect()
 
 
 if __name__ == "__main__":

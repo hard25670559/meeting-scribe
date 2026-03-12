@@ -170,10 +170,13 @@ class AudioCapture:
             buf_len = 0
             while self._running:
                 raw = stream.read(read_size, exception_on_overflow=False)
-                buf.append(np.frombuffer(raw, dtype=np.float32).reshape(-1, ch))
+                # 使用 copy() 而非 frombuffer 以確保獨立的記憶體
+                buf.append(np.frombuffer(raw, dtype=np.float32).reshape(-1, ch).copy())
                 buf_len += read_size
                 if buf_len >= chunk_native:
                     data = np.concatenate(buf)[:chunk_native]
+                    # 明確釋放舊的緩衝區
+                    del buf
                     buf = []
                     buf_len = 0
                     ch_levels = [np.abs(data[:, c]).max() for c in range(ch)]

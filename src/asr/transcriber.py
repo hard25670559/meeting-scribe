@@ -98,6 +98,11 @@ class Transcriber:
         else:
             text = self._transcribe_faster_whisper(wav_path)
 
+        # 組合所有片段的文字
+        text = "".join(segment.text for segment in segments).strip()
+        # 明確釋放 segments
+        del segments, info
+
         # 簡轉繁
         if text and self._converter:
             text = self._converter.convert(text)
