@@ -64,7 +64,12 @@ def asr_worker(asr_queue, transcriber, writer):
             # 收到結束信號
             break
         wav_path, start_time, end_time = item
-        text = transcriber.transcribe_file(wav_path)
+        try:
+            text = transcriber.transcribe_file(wav_path)
+        except Exception as exc:
+            print(f"\n[ASR 錯誤] 無法轉錄 {wav_path.name}: {exc}")
+            continue
+
         if text:
             writer.add_entry(text, start_time, end_time)
         

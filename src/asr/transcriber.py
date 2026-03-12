@@ -98,11 +98,6 @@ class Transcriber:
         else:
             text = self._transcribe_faster_whisper(wav_path)
 
-        # 組合所有片段的文字
-        text = "".join(segment.text for segment in segments).strip()
-        # 明確釋放 segments
-        del segments, info
-
         # 簡轉繁
         if text and self._converter:
             text = self._converter.convert(text)
@@ -110,12 +105,20 @@ class Transcriber:
         return text
 
     def _transcribe_faster_whisper(self, wav_path):
-        segments, info = self.model.transcribe(
-            str(wav_path),
-            language=self.language,
-            vad_filter=False,
-        )
-        return "".join(segment.text for segment in segments).strip()
+        segments = None
+        info = None
+        try:
+            segments, info = self.model.transcribe(
+                str(wav_path),
+                language=self.language,
+                vad_filter=False,
+            )
+            return "".join(segment.text for segment in segments).strip()
+        finally:
+            if segments is not None:
+                del segments
+            if info is not None:
+                del info
 
     def _transcribe_mlx(self, wav_path):
         import mlx_whisper
