@@ -12,3 +12,9 @@ config.yaml
 
 # 錄音輸出（含大量 WAV 檔案）
 transcripts/
+
+# 音訊檔案
+*.wav
+
+# Claude AI 的資料夾（含使用者設定和錄音輸出）
+.claude
