@@ -1,0 +1,489 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="UTF-8">
+<title>Hallucination Review</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Segoe UI', Arial, sans-serif; background: #0f0f0f; color: #e0e0e0; font-size: 13px; }
+
+  /* Top bar */
+  #topbar {
+    position: sticky; top: 0; z-index: 100;
+    background: #1a1a1a; border-bottom: 1px solid #333;
+    padding: 10px 16px; display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  }
+  #topbar h1 { font-size: 15px; font-weight: 600; color: #fff; white-space: nowrap; }
+  #stats { font-size: 12px; color: #888; white-space: nowrap; }
+  #filter-group { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+  #filter-group label { color: #aaa; font-size: 12px; }
+  select#pattern-filter {
+    background: #2a2a2a; color: #e0e0e0; border: 1px solid #444;
+    padding: 4px 8px; border-radius: 4px; font-size: 12px; cursor: pointer;
+  }
+  #label-filter-group { display: flex; gap: 4px; }
+  .lf-btn {
+    padding: 3px 10px; border-radius: 12px; border: 1px solid #444;
+    background: #2a2a2a; color: #aaa; cursor: pointer; font-size: 11px;
+    transition: all .15s;
+  }
+  .lf-btn.active { background: #3a3a3a; color: #fff; border-color: #666; }
+
+  /* Toast */
+  #toast-container {
+    position: fixed; top: 16px; right: 16px; z-index: 9999;
+    display: flex; flex-direction: column; gap: 8px; pointer-events: none;
+  }
+  .toast {
+    background: #222; border: 1px solid #444; border-radius: 6px;
+    padding: 10px 14px; font-size: 12px; color: #e0e0e0;
+    max-width: 320px; box-shadow: 0 4px 16px rgba(0,0,0,.5);
+    animation: slideIn .2s ease;
+  }
+  .toast.success { border-left: 3px solid #4caf50; }
+  .toast.info    { border-left: 3px solid #2196f3; }
+  .toast.warn    { border-left: 3px solid #fb8c00; }
+  @keyframes slideIn { from { transform: translateX(30px); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+  @keyframes slideOut { from { opacity: 1; } to { opacity: 0; transform: translateX(30px); } }
+
+  /* Table */
+  #table-wrap { overflow: auto; }
+  table { border-collapse: collapse; table-layout: fixed; width: 100%; }
+  thead th {
+    position: sticky; top: 0; background: #1e1e1e;
+    padding: 8px 10px; text-align: left; font-weight: 600;
+    color: #aaa; border-bottom: 2px solid #333; white-space: nowrap;
+    user-select: none; overflow: visible; z-index: 2;
+  }
+
+  tbody tr {
+    border-bottom: 1px solid #222; cursor: pointer;
+    transition: background .1s;
+  }
+  tbody tr:hover { background: #1f1f1f; }
+  tbody tr.playing { background: #1a3a5c !important; }
+  tbody td { padding: 7px 10px; vertical-align: middle; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  .col-idx        { width: 46px; }
+  .col-session    { width: 140px; }
+  .col-ts         { width: 120px; }
+  .col-text       { width: 300px; }
+  .col-pattern    { width: 160px; }
+  .col-size       { width: 70px; }
+  .col-path       { width: 200px; }
+  .col-label      { width: 130px; }
+  .col-correction { width: 180px; }
+
+  td.col-idx   { color: #555; text-align: right; }
+  td.col-session { color: #7ec8e3; }
+  td.col-ts    { color: #888; font-size: 11px; white-space: pre-line; }
+  td.col-size  { text-align: right; color: #666; }
+  td.col-path  { color: #555; font-size: 11px; }
+
+  .pattern-badge {
+    display: inline-block; background: #2a2a2a; border: 1px solid #383838;
+    border-radius: 3px; padding: 1px 6px; font-size: 11px; color: #b0b0b0;
+    font-family: monospace; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+
+  input.correction-input {
+    background: #1a1a1a; color: #e0e0e0; border: 1px solid #555;
+    border-radius: 4px; padding: 3px 7px; font-size: 12px; width: 100%;
+    outline: none;
+  }
+  input.correction-input:focus { border-color: #e53935; }
+  input.correction-input::placeholder { color: #555; font-style: italic; }
+  .correction-na { color: #333; font-size: 12px; }
+
+  select.label-select {
+    background: #222; color: #e0e0e0; border: 1px solid #444;
+    border-radius: 4px; padding: 3px 6px; font-size: 12px; cursor: pointer; width: 100%;
+  }
+  select.label-select.l-hallucination { border-color: #e53935; color: #ef9a9a; background: #1a0a0a; }
+  select.label-select.l-silence       { border-color: #fb8c00; color: #ffcc80; background: #1a1000; }
+  select.label-select.l-correct       { border-color: #43a047; color: #a5d6a7; background: #0a1a0a; }
+  select.label-select.l-unknown       { border-color: #7b1fa2; color: #ce93d8; background: #12001a; }
+
+  #no-data { padding: 40px; text-align: center; color: #555; }
+</style>
+</head>
+<body>
+
+<div id="topbar">
+  <h1>🎧 Hallucination Review</h1>
+  <span id="stats">載入中…</span>
+  <div id="filter-group">
+    <label>Pattern：</label>
+    <select id="pattern-filter"><option value="">全部</option></select>
+  </div>
+  <div id="filter-group">
+    <label>標記：</label>
+    <div id="label-filter-group">
+      <button class="lf-btn active" data-lf="">全部</button>
+      <button class="lf-btn" data-lf="未標記">未標記</button>
+      <button class="lf-btn" data-lf="辨識錯誤">辨識錯誤</button>
+      <button class="lf-btn" data-lf="無音效">無音效</button>
+      <button class="lf-btn" data-lf="正確辨識">正確辨識</button>
+      <button class="lf-btn" data-lf="無法辨識">無法辨識</button>
+    </div>
+  </div>
+</div>
+
+<div id="toast-container"></div>
+
+<div id="table-wrap">
+  <table id="main-table">
+    <colgroup>
+      <col class="col-idx">
+      <col class="col-session">
+      <col class="col-ts">
+      <col class="col-pattern">
+      <col class="col-size">
+      <col class="col-path">
+      <col class="col-label">
+      <col class="col-text">
+      <col class="col-correction">
+    </colgroup>
+    <thead>
+      <tr>
+        <th class="col-idx">#</th>
+        <th class="col-session">Session</th>
+        <th class="col-ts">時間戳</th>
+        <th class="col-pattern">觸發 Pattern</th>
+        <th class="col-size">大小</th>
+        <th class="col-path">完整路徑</th>
+        <th class="col-label">標記</th>
+        <th class="col-text">辨識文字</th>
+        <th class="col-correction">正確文字</th>
+      </tr>
+    </thead>
+    <tbody id="tbody"></tbody>
+  </table>
+  <div id="no-data" style="display:none">沒有符合條件的資料</div>
+</div>
+
+<script>
+let allRows = [];
+let currentAudio = null;
+let currentTr = null;
+let currentRow = null;       // data row currently playing
+let lastPlayedTr = null;     // most recent row played (persists after audio ends)
+let lastPlayedRow = null;
+let activePatternFilter = '';
+let activeLabelFilter = '';
+
+// ── Resizable columns ──────────────────────────────────────────
+function initResizable() {
+  const EDGE = 6; // px from right edge to trigger resize
+  const cols = document.querySelectorAll('colgroup col');
+  let resizing = false;
+
+  document.querySelectorAll('thead th').forEach((th, i) => {
+    let startX, startW;
+
+    th.addEventListener('mousemove', (e) => {
+      if (resizing) return;
+      const rect = th.getBoundingClientRect();
+      th.style.cursor = (e.clientX >= rect.right - EDGE) ? 'col-resize' : '';
+    });
+    th.addEventListener('mouseleave', () => {
+      if (!resizing) th.style.cursor = '';
+    });
+    th.addEventListener('mousedown', (e) => {
+      const rect = th.getBoundingClientRect();
+      if (e.clientX < rect.right - EDGE) return;
+      e.preventDefault();
+      resizing = true;
+      startX = e.pageX;
+      startW = cols[i].offsetWidth || th.offsetWidth;
+      document.body.style.cursor = 'col-resize';
+
+      const onMove = (e) => {
+        const w = Math.max(40, startW + e.pageX - startX);
+        cols[i].style.width = w + 'px';
+      };
+      const onUp = () => {
+        resizing = false;
+        document.body.style.cursor = '';
+        document.removeEventListener('mousemove', onMove);
+        document.removeEventListener('mouseup', onUp);
+      };
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup', onUp);
+    });
+  });
+}
+
+// ── Utilities ──────────────────────────────────────────────────
+function formatSize(bytes) {
+  if (!bytes) return '-';
+  bytes = parseInt(bytes);
+  if (bytes < 1024) return bytes + ' B';
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+  return (bytes / 1024 / 1024).toFixed(2) + ' MB';
+}
+
+function showToast(msg, type = 'info') {
+  const c = document.getElementById('toast-container');
+  const t = document.createElement('div');
+  t.className = `toast ${type}`;
+  t.textContent = msg;
+  c.appendChild(t);
+  setTimeout(() => {
+    t.style.animation = 'slideOut .3s ease forwards';
+    setTimeout(() => t.remove(), 300);
+  }, 3000);
+}
+
+function labelClass(label) {
+  if (label === '辨識錯誤') return 'l-hallucination';
+  if (label === '無音效') return 'l-silence';
+  if (label === '正確辨識') return 'l-correct';
+  if (label === '無法辨識') return 'l-unknown';
+  return '';
+}
+
+function updateStats() {
+  const total = allRows.length;
+  const labeled = allRows.filter(r => r.label && r.label !== '未標記' && r.label !== '').length;
+  const counts = { '辨識錯誤': 0, '無音效': 0, '正確辨識': 0, '無法辨識': 0, '未標記': 0 };
+  allRows.forEach(r => {
+    const l = r.label || '未標記';
+    if (counts[l] !== undefined) counts[l]++;
+    else counts['未標記']++;
+  });
+  document.getElementById('stats').textContent =
+    `總計 ${total} 筆 ｜ 已標記 ${labeled} ｜ 辨識錯誤 ${counts['辨識錯誤']} ｜ 無音效 ${counts['無音效']} ｜ 正確辨識 ${counts['正確辨識']} ｜ 無法辨識 ${counts['無法辨識']} ｜ 未標記 ${counts['未標記']}`;
+}
+
+// ── Apply label to a tr + data row ────────────────────────────
+function applyLabelToTr(tr, row, newLabel) {
+  row.label = newLabel;
+  row._manuallyLabeled = true;
+  const sel = tr.querySelector('select.label-select');
+  if (sel) {
+    sel.value = newLabel;
+    sel.className = `label-select ${labelClass(newLabel)}`;
+  }
+  saveLabel(row.session, row.line, newLabel, row.wav);
+  updateStats();
+}
+
+// ── Render ─────────────────────────────────────────────────────
+function renderTable() {
+  const tbody = document.getElementById('tbody');
+  tbody.innerHTML = '';
+
+  const filtered = allRows.filter(r => {
+    const patOk = !activePatternFilter || r.pattern === activePatternFilter;
+    const lblVal = r.label || '未標記';
+    const lblOk = !activeLabelFilter || lblVal === activeLabelFilter;
+    return patOk && lblOk;
+  });
+
+  document.getElementById('no-data').style.display = filtered.length ? 'none' : 'block';
+
+  filtered.forEach((row, idx) => {
+    const tr = document.createElement('tr');
+    tr.dataset.session = row.session;
+    tr.dataset.line = row.line;
+    tr.dataset.wav = row.wav;
+
+    const label = row.label || '未標記';
+    const audioSrc = `/audio/${row.full_path}`;
+
+    const correction = row.correction || '';
+    const correctionCell = label === '辨識錯誤'
+      ? `<input class="correction-input" type="text" value="${escHtml(correction)}" placeholder="填入正確辨識文字（可留空）">`
+      : `<span class="correction-na">—</span>`;
+
+    tr.innerHTML = `
+      <td class="col-idx">${idx + 1}</td>
+      <td class="col-session" title="${row.session}">${row.session.replace('transcript_', '')}</td>
+      <td class="col-ts">${row.ts_start}\n${row.ts_end}</td>
+      <td class="col-pattern"><span class="pattern-badge" title="${escHtml(row.pattern)}">${escHtml(row.pattern)}</span></td>
+      <td class="col-size">${formatSize(row.file_size)}</td>
+      <td class="col-path" title="${escHtml(row.full_path)}">${escHtml(row.full_path)}</td>
+      <td class="col-label">
+        <select class="label-select ${labelClass(label)}">
+          <option value="未標記"  ${label==='未標記'  ?'selected':''}>未標記</option>
+          <option value="辨識錯誤" ${label==='辨識錯誤'?'selected':''}>辨識錯誤</option>
+          <option value="無音效"  ${label==='無音效'  ?'selected':''}>無音效</option>
+          <option value="正確辨識" ${label==='正確辨識'?'selected':''}>正確辨識</option>
+          <option value="無法辨識" ${label==='無法辨識'?'selected':''}>無法辨識</option>
+        </select>
+      </td>
+      <td class="col-text" title="${escHtml(row.text)}">${escHtml(row.text)}</td>
+      <td class="col-correction">${correctionCell}</td>
+    `;
+
+    // Play on row click
+    tr.addEventListener('click', (e) => {
+      if (e.target.tagName === 'SELECT' || e.target.tagName === 'OPTION') return;
+      // Auto-label previous played row as 無音效 if not manually labeled
+      const prevRow = lastPlayedRow;
+      const prevTr  = lastPlayedTr;
+      if (prevRow && prevRow !== row && !prevRow._manuallyLabeled) {
+        const prevLabel = prevRow.label || '';
+        if (!prevLabel || prevLabel === '未標記') {
+          applyLabelToTr(prevTr, prevRow, '無音效');
+          showToast(`⚡ ${prevRow.wav} 自動標示為「無音效」`, 'warn');
+        }
+      }
+      playAudio(audioSrc, tr, row);
+    });
+
+    // Label change (manual)
+    tr.querySelector('select').addEventListener('change', (e) => {
+      e.stopPropagation();
+      const sel = e.target;
+      const newLabel = sel.value;
+      row._manuallyLabeled = true;
+      row.label = newLabel;
+      sel.className = `label-select ${labelClass(newLabel)}`;
+      saveLabel(row.session, row.line, newLabel, row.wav);
+      // Update correction cell
+      const corrCell = tr.querySelector('.col-correction');
+      if (newLabel === '辨識錯誤') {
+        corrCell.innerHTML = `<input class="correction-input" type="text" value="${escHtml(row.correction || '')}" placeholder="填入正確辨識文字（可留空）">`;
+        bindCorrectionInput(corrCell.querySelector('input'), row);
+      } else {
+        corrCell.innerHTML = `<span class="correction-na">—</span>`;
+      }
+      updateStats();
+    });
+
+    // Correction input events
+    const corrInput = tr.querySelector('input.correction-input');
+    if (corrInput) bindCorrectionInput(corrInput, row);
+
+    tbody.appendChild(tr);
+  });
+}
+
+// ── Audio ──────────────────────────────────────────────────────
+function playAudio(src, tr, row) {
+  if (currentAudio) {
+    currentAudio.pause();
+    currentAudio = null;
+  }
+  if (currentTr) currentTr.classList.remove('playing');
+
+  currentTr = tr;
+  currentRow = row;
+  lastPlayedTr = tr;
+  lastPlayedRow = row;
+  row._manuallyLabeled = row._manuallyLabeled || false;
+
+  const audio = new Audio(src);
+  currentAudio = audio;
+  tr.classList.add('playing');
+  audio.play().catch(() => showToast('音訊播放失敗', 'info'));
+  showToast(`▶ ${row.wav} 開始播放`, 'info');
+
+  audio.addEventListener('ended', () => {
+    tr.classList.remove('playing');
+    currentAudio = null;
+    currentTr = null;
+    currentRow = null;
+  });
+}
+
+// ── Save ───────────────────────────────────────────────────────
+function bindCorrectionInput(input, row) {
+  let saveTimer = null;
+  const doSave = () => {
+    const val = input.value;
+    row.correction = val;
+    saveCorrection(row.session, row.line, val, row.wav);
+  };
+  input.addEventListener('click', (e) => e.stopPropagation());
+  input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); doSave(); input.blur(); } });
+  input.addEventListener('blur', doSave);
+  input.addEventListener('input', () => {
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(doSave, 800);
+  });
+}
+
+async function saveCorrection(session, line, correction, wavName) {
+  try {
+    const res = await fetch('/api/correction', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ session, line: parseInt(line), correction })
+    });
+    const data = await res.json();
+    if (data.ok) {
+      showToast(`✓ ${wavName} 正確文字已儲存`, 'success');
+    } else {
+      showToast('儲存失敗：' + (data.error || '未知錯誤'), 'info');
+    }
+  } catch {
+    showToast('儲存失敗：網路錯誤', 'info');
+  }
+}
+
+async function saveLabel(session, line, label, wavName) {
+  try {
+    const res = await fetch('/api/label', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ session, line: parseInt(line), label })
+    });
+    const data = await res.json();
+    if (data.ok) {
+      showToast(`✓ ${wavName} 已被標示為「${label}」`, 'success');
+    } else {
+      showToast('儲存失敗：' + (data.error || '未知錯誤'), 'info');
+    }
+  } catch {
+    showToast('儲存失敗：網路錯誤', 'info');
+  }
+}
+
+function escHtml(str) {
+  return String(str || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function updateLayout() {
+  const topbarH = document.getElementById('topbar').getBoundingClientRect().height;
+  document.getElementById('table-wrap').style.height = `calc(100vh - ${topbarH}px)`;
+}
+
+// ── Init ───────────────────────────────────────────────────────
+async function init() {
+  updateLayout();
+  window.addEventListener('resize', updateLayout);
+
+  const res = await fetch('/api/data');
+  allRows = await res.json();
+  allRows.forEach(r => { r._manuallyLabeled = false; });
+
+  const patterns = [...new Set(allRows.map(r => r.pattern))].sort();
+  const sel = document.getElementById('pattern-filter');
+  patterns.forEach(p => {
+    const opt = document.createElement('option');
+    opt.value = p; opt.textContent = p;
+    sel.appendChild(opt);
+  });
+  sel.addEventListener('change', () => { activePatternFilter = sel.value; renderTable(); });
+
+  document.querySelectorAll('.lf-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.lf-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      activeLabelFilter = btn.dataset.lf;
+      renderTable();
+    });
+  });
+
+  updateStats();
+  renderTable();
+  initResizable();
+}
+
+init();
+</script>
+</body>
+</html>
